@@ -1,0 +1,122 @@
+#!/bin/sh
+
+function usage()
+{
+	echo    "translate ssh public key to Openssl format."
+	echo -e "Usage:\n\t$0 sslpubkey."
+}
+
+file=$1
+if [ -z $file ]; then
+	usage
+	exit
+fi
+
+
+##############################################
+# base64 -> sshkey
+##############################################
+cat $file | tr -d "\n" | sed -e "s/.\{64\}/\0\n/g" | openssl base64 -d > $file.sshkey
+
+
+
+
+##############################################
+# parse sshkey
+##############################################
+#format: [id lens][id][exponent lens][exponent data][modulus lens][modulus data]
+
+
+filesize=`wc -c  $file.sshkey  | cut -d " " -f 1-1`
+for i in `seq 0 $filesize` ;
+do
+	let offset=$i;	
+	let len=4
+	type=`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X \"\' $file.sshkey `
+
+	if [[ "$type" == "00 00 00 07" ]] ;then	#lens of "ssh-rsa"
+		match=1;
+		break;
+	fi
+done;
+
+if [[ -z $match ]] ;then
+	echo "Can't parse ssh-key field, format is illegal?!"
+	exit
+fi
+
+echo "=== ssh-key field ==="
+let offset=$i
+let len=4
+ssh_id_len=0x`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X\"\' $file.sshkey `
+echo -e "Identify len =\t$ssh_id_len"
+
+let offset+=len
+let len=7
+ssh_id=`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X \"\' $file.sshkey `
+echo -e "Idnetify =\t$ssh_id (`echo $ssh_id | xxd -r -p`)"
+
+let offset+=len
+let len=4
+elen=0x`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X\"\' $file.sshkey `
+echo -e "Exponent len=\t$elen"
+
+let offset+=len
+let len=$elen
+e=0x`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X\"\' $file.sshkey `
+echo -e "Exponent =\t$e"
+
+let offset+=len
+let len=4
+mlen=0x`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X\"\' $file.sshkey `
+echo -e "Modulus len =\t$mlen"
+
+let offset+=len
+let len=$mlen
+m=0x`eval hexdump -s $offset -n $len -e \'$len/1 \"%02X\"\' $file.sshkey `
+echo -e "Modulus =\t`echo $m | sed -e "s/.\{128\}/\0\n\t\t/g"` " "\n"
+
+
+##############################################
+# generate asn1 conf
+##############################################
+TEMP=$file.conf
+
+# Start with a SEQUENCE
+echo asn1=SEQUENCE:pubkeyinfo > $TEMP
+
+# pubkeyinfo contains an algorithm identifier and the public key wrapped
+# in a BIT STRING
+echo [pubkeyinfo] >> $TEMP
+echo algorithm=SEQUENCE:rsa_alg >> $TEMP
+echo pubkey=BITWRAP,SEQUENCE:rsapubkey >> $TEMP
+
+# algorithm ID for RSA is just an OID and a NULL
+echo [rsa_alg] >> $TEMP
+echo algorithm=OID:rsaEncryption >> $TEMP
+echo parameter=NULL >> $TEMP
+
+# Actual public key: modulus and exponent
+echo [rsapubkey] >> $TEMP
+echo n=INTEGER:$m >> $TEMP
+echo e=INTEGER:$e >> $TEMP
+
+##############################################
+# asn1 conf -> openssl public key (PEM format)
+##############################################
+openssl asn1parse -genconf $TEMP -out $file.der -noout
+
+openssl rsa -in $file.der -inform DER -pubin -out $file.pem
+
+rm -f $file.sshkey	#ssh key
+rm -f $TEMP		#asn1 conf
+rm -f $file.der		#public key in DER format
+
+
+
+
+
+
+
+
+
