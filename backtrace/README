@@ -1,0 +1,4 @@
+example of backtrace. (glibc of GNU extensions)
+
+Please man:
+	backtrace(), backtrace_symbols(), and backtrace_symbols_fd()
